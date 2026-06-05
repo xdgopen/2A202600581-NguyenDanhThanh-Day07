@@ -30,8 +30,8 @@ class EmbeddingStore:
         try:
             import chromadb
 
-            self._client = chromadb.Client()
-            self._collection = self._client.get_or_create_collection(name=collection_name)
+            client = chromadb.Client()
+            self._collection = client.get_or_create_collection(name=collection_name)
             self._use_chroma = True
         except Exception:
             self._use_chroma = False
@@ -39,33 +39,35 @@ class EmbeddingStore:
 
     def _make_record(self, doc: Document) -> dict[str, Any]:
         metadata = dict(doc.metadata or {})
-        metadata["doc_id"] = doc.id
-        record = {
-            "id": f"{doc.id}-{self._next_index}",
+        metadata.setdefault("doc_id", doc.id)
+        record_id = f"{doc.id}:{self._next_index}"
+        self._next_index += 1
+        return {
+            "id": record_id,
+            "doc_id": doc.id,
             "content": doc.content,
             "metadata": metadata,
             "embedding": self._embedding_fn(doc.content),
         }
-        self._next_index += 1
-        return record
 
     def _search_records(self, query: str, records: list[dict[str, Any]], top_k: int) -> list[dict[str, Any]]:
-        if top_k <= 0 or not records:
+        if top_k <= 0:
             return []
 
         query_embedding = self._embedding_fn(query)
         results: list[dict[str, Any]] = []
         for record in records:
+            score = _dot(query_embedding, record["embedding"])
             results.append(
                 {
                     "id": record["id"],
                     "content": record["content"],
                     "metadata": dict(record["metadata"]),
-                    "score": _dot(query_embedding, record["embedding"]),
+                    "score": score,
                 }
             )
 
-        results.sort(key=lambda result: result["score"], reverse=True)
+        results.sort(key=lambda item: item["score"], reverse=True)
         return results[:top_k]
 
     def add_documents(self, docs: list[Document]) -> None:
@@ -76,18 +78,14 @@ class EmbeddingStore:
         For in-memory: append dicts to self._store
         """
         records = [self._make_record(doc) for doc in docs]
-        self._store.extend(records)
-
         if self._use_chroma and self._collection is not None and records:
-            try:
-                self._collection.add(
-                    ids=[record["id"] for record in records],
-                    documents=[record["content"] for record in records],
-                    embeddings=[record["embedding"] for record in records],
-                    metadatas=[record["metadata"] for record in records],
-                )
-            except Exception:
-                self._use_chroma = False
+            self._collection.add(
+                ids=[record["id"] for record in records],
+                documents=[record["content"] for record in records],
+                embeddings=[record["embedding"] for record in records],
+                metadatas=[record["metadata"] for record in records],
+            )
+        self._store.extend(records)
 
     def search(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
         """
@@ -123,16 +121,22 @@ class EmbeddingStore:
 
         Returns True if any chunks were removed, False otherwise.
         """
-        matching_ids = [record["id"] for record in self._store if record["metadata"].get("doc_id") == doc_id]
-        if not matching_ids:
-            return False
+        size_before = len(self._store)
+        removed_ids = [
+            record["id"]
+            for record in self._store
+            if record["metadata"].get("doc_id") == doc_id
+        ]
+        self._store = [
+            record
+            for record in self._store
+            if record["metadata"].get("doc_id") != doc_id
+        ]
 
-        self._store = [record for record in self._store if record["id"] not in matching_ids]
-
-        if self._use_chroma and self._collection is not None:
+        if self._use_chroma and self._collection is not None and removed_ids:
             try:
-                self._collection.delete(ids=matching_ids)
+                self._collection.delete(ids=removed_ids)
             except Exception:
-                self._use_chroma = False
+                pass
 
-        return True
+        return len(self._store) < size_before
