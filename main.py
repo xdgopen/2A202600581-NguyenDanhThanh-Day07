@@ -4,7 +4,11 @@ import os
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(*args, **kwargs) -> bool:
+        return False
 
 from src.agent import KnowledgeBaseAgent
 from src.embeddings import (

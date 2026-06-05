@@ -77,58 +77,65 @@ class RecursiveChunker:
 
     def __init__(self, separators: list[str] | None = None, chunk_size: int = 500) -> None:
         self.separators = self.DEFAULT_SEPARATORS if separators is None else list(separators)
-        self.chunk_size = max(1, chunk_size)
+        self.chunk_size = chunk_size
 
     def chunk(self, text: str) -> list[str]:
         if not text:
             return []
+        if len(text) <= self.chunk_size:
+            return [text.strip()]
+
         chunks = self._split(text.strip(), self.separators)
         return [chunk.strip() for chunk in chunks if chunk.strip()]
 
     def _split(self, current_text: str, remaining_separators: list[str]) -> list[str]:
+        current_text = current_text.strip()
+        if not current_text:
+            return []
         if len(current_text) <= self.chunk_size:
             return [current_text]
 
         if not remaining_separators:
             return [
-                current_text[start : start + self.chunk_size]
+                current_text[start : start + self.chunk_size].strip()
                 for start in range(0, len(current_text), self.chunk_size)
+                if current_text[start : start + self.chunk_size].strip()
             ]
 
         separator = remaining_separators[0]
-        next_separators = remaining_separators[1:]
-
+        rest = remaining_separators[1:]
         if separator == "":
             return [
-                current_text[start : start + self.chunk_size]
+                current_text[start : start + self.chunk_size].strip()
                 for start in range(0, len(current_text), self.chunk_size)
+                if current_text[start : start + self.chunk_size].strip()
             ]
 
         if separator not in current_text:
-            return self._split(current_text, next_separators)
+            return self._split(current_text, rest)
 
-        pieces = [piece for piece in current_text.split(separator) if piece]
+        pieces = [piece.strip() for piece in current_text.split(separator) if piece.strip()]
         chunks: list[str] = []
-        current_chunk = ""
+        buffer = ""
 
         for piece in pieces:
-            candidate = piece if not current_chunk else current_chunk + separator + piece
-            if len(candidate) <= self.chunk_size:
-                current_chunk = candidate
+            if len(piece) > self.chunk_size:
+                if buffer:
+                    chunks.append(buffer.strip())
+                    buffer = ""
+                chunks.extend(self._split(piece, rest))
                 continue
 
-            if current_chunk:
-                chunks.append(current_chunk)
-                current_chunk = ""
-
-            if len(piece) <= self.chunk_size:
-                current_chunk = piece
+            candidate = piece if not buffer else f"{buffer}{separator}{piece}"
+            if len(candidate) <= self.chunk_size:
+                buffer = candidate
             else:
-                chunks.extend(self._split(piece, next_separators))
+                if buffer:
+                    chunks.append(buffer.strip())
+                buffer = piece
 
-        if current_chunk:
-            chunks.append(current_chunk)
-
+        if buffer:
+            chunks.append(buffer.strip())
         return chunks
 
 
@@ -146,7 +153,7 @@ def compute_similarity(vec_a: list[float], vec_b: list[float]) -> float:
     """
     norm_a = math.sqrt(sum(value * value for value in vec_a))
     norm_b = math.sqrt(sum(value * value for value in vec_b))
-    if norm_a == 0.0 or norm_b == 0.0:
+    if norm_a == 0 or norm_b == 0:
         return 0.0
     return _dot(vec_a, vec_b) / (norm_a * norm_b)
 
@@ -164,10 +171,10 @@ class ChunkingStrategyComparator:
         comparison = {}
         for name, chunker in strategies.items():
             chunks = chunker.chunk(text)
-            total_length = sum(len(chunk) for chunk in chunks)
+            avg_length = sum(len(chunk) for chunk in chunks) / len(chunks) if chunks else 0
             comparison[name] = {
                 "count": len(chunks),
-                "avg_length": total_length / len(chunks) if chunks else 0,
+                "avg_length": avg_length,
                 "chunks": chunks,
             }
         return comparison
